@@ -24,8 +24,8 @@ app.use(express.static('public'));
 app.use(express.json());
 
 // Owner configuration
-const OWNER_NUMBER = "919XXXXXXXXX@c.us"; // Replace with your number
-const BOT_NAME = "RABBIT XMD MINI";
+const OWNER_NUMBER = "918958154046"; // Replace with your number
+const BOT_NAME = "9MAN-X-YAMDHUD";
 const PREFIX = ".";
 
 // Store active connections
