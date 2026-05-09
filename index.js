@@ -2,10 +2,10 @@ const {
     default: makeWASocket,
     useMultiFileAuthState,
     delay,
+    makeCacheableSignalKeyStore,
     DisconnectReason,
     fetchLatestBaileysVersion,
-    downloadContentFromMessage,
-    Browsers
+    downloadContentFromMessage
 } = require("@whiskeysockets/baileys");
 const express = require("express");
 const fs = require("fs-extra");
@@ -13,199 +13,583 @@ const pino = require("pino");
 const path = require("path");
 const axios = require("axios");
 const ytdl = require("ytdl-core");
+const yts = require("yt-search");
 const moment = require("moment");
 const os = require("os");
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = 3000;
 
-app.use(express.json());
 app.use(express.static('public'));
+app.use(express.json());
 
-// ============ CONFIGURATION ============
+// Owner configuration
 const OWNER_NUMBER = "918154980144@c.us";
 const BOT_NAME = "9MAN-X-YAMDHUD";
 const PREFIX = ".";
 
-// Store active sessions
-let activeSessions = new Map();
+// Store active connections
+let activeSockets = new Map();
+let botStartTime = Date.now();
 
-// ============ IMPROVED PAIRING FUNCTION ============
-async function createBotSession(phoneNumber, res) {
-    const sessionId = `session_${phoneNumber}_${Date.now()}`;
-    const sessionDir = path.join(__dirname, 'sessions', sessionId);
-    
-    console.log(`\n🔵 [${new Date().toLocaleTimeString()}] Starting session for: ${phoneNumber}`);
+// ============ COMMAND HANDLER ============
+async function handleCommand(sock, msg, command, args, sender) {
+    const chatId = msg.key.remoteJid;
+    const isGroup = chatId.endsWith("@g.us");
+    const isOwner = sender === OWNER_NUMBER;
     
     try {
-        // Clean previous session if exists
-        const cleanNumber = phoneNumber.replace(/[^0-9]/g, '');
-        const existingSession = [...activeSessions.keys()].find(key => key.includes(cleanNumber));
-        if (existingSession) {
-            console.log(`🧹 Cleaning existing session for ${cleanNumber}`);
-            const oldSession = activeSessions.get(existingSession);
-            if (oldSession) await oldSession.logout().catch(() => {});
-            activeSessions.delete(existingSession);
+        // ========== GENERAL COMMANDS ==========
+        if (command === "menu" || command === "gmenu") {
+            const uptime = process.uptime();
+            const days = Math.floor(uptime / 86400);
+            const hours = Math.floor(uptime / 3600) % 24;
+            const minutes = Math.floor(uptime / 60) % 60;
+            const seconds = Math.floor(uptime % 60);
+            const totalMem = os.totalmem() / 1024 / 1024 / 1024;
+            const freeMem = os.freemem() / 1024 / 1024 / 1024;
+            const usedMem = totalMem - freeMem;
+            
+            const menuText = `╔〔 🧚‍♀️*${BOT_NAME}*💐〕╗
+ *👋 Hello, ${BOT_NAME} User!*
+╚══════════════════════╝
+
+╭─「 *COMMAND PANEL* 」
+│🔹 *Run*     : ${days}d ${hours}h ${minutes}m ${seconds}s
+│🔹 *Mode*    : Public
+│🔹 *Prefix*  : ${PREFIX}
+│🔹 *Ram*     : ${usedMem.toFixed(2)} / ${totalMem.toFixed(2)} GB
+│🔹 *Time*    : ${moment().format('hh:mm:ss A')}
+│🔹 *User*    : ${sender.split("@")[0]}
+╰─────────────●●►
+
+*╭────❒ DOWNLOADER ❒*
+*├◈ ${PREFIX}ytv <url>*
+*├◈ ${PREFIX}yta <url>*
+*├◈ ${PREFIX}fb <url>*
+*├◈ ${PREFIX}ig <url>*
+*├◈ ${PREFIX}tiktok <url>*
+*├◈ ${PREFIX}twitter <url>*
+*├◈ ${PREFIX}mediafire <url>*
+*┕──────────────────❒*
+
+*╭────❒ GENERAL ❒*
+*├◈ ${PREFIX}menu*
+*├◈ ${PREFIX}ping*
+*├◈ ${PREFIX}uptime*
+*├◈ ${PREFIX}owner*
+*├◈ ${PREFIX}botinfo*
+*┕──────────────────❒*
+
+*╭────❒ GROUP ❒*
+*├◈ ${PREFIX}tagall*
+*├◈ ${PREFIX}admins*
+*├◈ ${PREFIX}promote @user*
+*├◈ ${PREFIX}demote @user*
+*├◈ ${PREFIX}kick @user*
+*├◈ ${PREFIX}add 91xxxxx*
+*├◈ ${PREFIX}leave*
+*├◈ ${PREFIX}groupinfo*
+*┕──────────────────❒*
+
+*╭────❒ MEDIA ❒*
+*├◈ ${PREFIX}sticker*
+*├◈ ${PREFIX}toimage*
+*├◈ ${PREFIX}s*
+*┕──────────────────❒*
+
+*╭────❒ TOOLS ❒*
+*├◈ ${PREFIX}qr <text>*
+*├◈ ${PREFIX}ssweb <url>*
+*├◈ ${PREFIX}shorturl <url>*
+*├◈ ${PREFIX}calc <eq>*
+*├◈ ${PREFIX}weather <city>*
+*├◈ ${PREFIX}wiki <query>*
+*├◈ ${PREFIX}translate <lang> <text>*
+*┕──────────────────❒*
+
+*╭────❒ REACTIONS ❒*
+*├◈ ${PREFIX}hug @user*
+*├◈ ${PREFIX}kiss @user*
+*├◈ ${PREFIX}slap @user*
+*├◈ ${PREFIX}pat @user*
+*├◈ ${PREFIX}poke @user*
+*├◈ ${PREFIX}dance*
+*├◈ ${PREFIX}cry*
+*┕──────────────────❒*
+
+*╭────❒ OWNER ❒*
+*├◈ ${PREFIX}block @user*
+*├◈ ${PREFIX}unblock @user*
+*├◈ ${PREFIX}bc <msg>*
+*├◈ ${PREFIX}join <link>*
+*├◈ ${PREFIX}leaveall*
+*┕──────────────────❒*
+
+*Made by YAMDHUD*`;
+            await sock.sendMessage(chatId, { text: menuText });
         }
         
-        // Ensure fresh directory
-        await fs.remove(sessionDir).catch(() => {});
-        await fs.ensureDir(sessionDir);
+        else if (command === "ping") {
+            const start = Date.now();
+            await sock.sendMessage(chatId, { text: "🏓 Pinging..." });
+            const end = Date.now();
+            await sock.sendMessage(chatId, { text: `*Pong!* 🏓\nLatency: ${end - start}ms` });
+        }
         
-        // Get auth state
-        const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-        const { version } = await fetchLatestBaileysVersion();
+        else if (command === "uptime" || command === "runtime") {
+            const uptime = process.uptime();
+            const days = Math.floor(uptime / 86400);
+            const hours = Math.floor(uptime / 3600) % 24;
+            const minutes = Math.floor(uptime / 60) % 60;
+            const seconds = Math.floor(uptime % 60);
+            await sock.sendMessage(chatId, { text: `*Bot Uptime:*\n${days}d ${hours}h ${minutes}m ${seconds}s` });
+        }
         
-        console.log(`📡 Baileys version: ${version.join('.')}`);
+        else if (command === "owner" || command === "creator") {
+            await sock.sendMessage(chatId, { text: `*Creator:* YAMDHUD\n*WhatsApp:* wa.me/${OWNER_NUMBER.split("@")[0]}\n*GitHub:* github.com/yamdhund` });
+        }
         
-        // Create socket with CORRECT pairing configuration
-        const sock = makeWASocket({
-            version: version,
-            auth: state,
-            printQRInTerminal: false,
-            logger: pino({ level: 'silent' }),
-            browser: Browsers.ubuntu("Chrome"),
-            syncFullHistory: false,
-            markOnlineOnConnect: true,
-            generateHighQualityLinkPreview: false,
-            patchMessageBeforeSending: (msg) => msg,
-            shouldSyncHistoryMessage: () => false,
-            getMessage: async () => undefined
-        });
+        else if (command === "botinfo") {
+            const totalMem = os.totalmem() / 1024 / 1024 / 1024;
+            const freeMem = os.freemem() / 1024 / 1024 / 1024;
+            const usedMem = totalMem - freeMem;
+            await sock.sendMessage(chatId, { 
+                text: `*🤖 Bot Information*\n\n*Name:* ${BOT_NAME}\n*Version:* 2.0.0\n*Owner:* YAMDHUD\n*Uptime:* ${moment.duration(process.uptime(), 'seconds').humanize()}\n*RAM:* ${usedMem.toFixed(2)}/${totalMem.toFixed(2)} GB\n*Platform:* ${os.platform()}\n*Node.js:* ${process.version}`
+            });
+        }
         
-        // Store session
-        activeSessions.set(sessionId, { sock, dir: sessionDir, number: cleanNumber });
-        
-        // ============ CONNECTION UPDATE HANDLER ============
-        sock.ev.on("connection.update", async (update) => {
-            const { connection, lastDisconnect, qr } = update;
-            
-            console.log(`📡 Connection update: ${connection || 'unknown'}`);
-            
-            if (qr) {
-                console.log("📱 QR Code received (fallback method)");
+        // ========== DOWNLOADER COMMANDS ==========
+        else if (command === "ytv" || command === "ytmp4") {
+            if (!args[0]) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}ytv <youtube_url>` });
+                return;
             }
-            
-            if (connection === "open") {
-                console.log(`✅✅✅ CONNECTED SUCCESSFULLY! ✅✅✅`);
-                console.log(`📱 User: ${sock.user.id}`);
-                
-                // Send success message
-                await delay(2000);
-                const userJid = `${cleanNumber}@s.whatsapp.net`;
-                
-                try {
-                    await sock.sendMessage(userJid, {
-                        text: `✅ *${BOT_NAME}* connected successfully!\n\n📱 Your number: ${cleanNumber}\n🎯 Command prefix: ${PREFIX}\n📋 Type *${PREFIX}menu* to see all commands\n\n👑 Made by YAMDHUD`
-                    });
-                    
-                    // Send creds file
-                    const credsPath = path.join(sessionDir, 'creds.json');
-                    if (fs.existsSync(credsPath)) {
-                        await sock.sendMessage(userJid, {
-                            document: fs.readFileSync(credsPath),
-                            fileName: "creds.json",
-                            mimetype: "application/json",
-                            caption: "🔐 Your authentication file. Save it safely!"
-                        });
-                    }
-                } catch (err) {
-                    console.log("Could not send welcome message:", err.message);
-                }
-                
-                if (res) {
-                    res.json({ status: true, code: "ALREADY_CONNECTED", message: "Bot connected successfully!" });
-                }
-            }
-            
-            if (connection === "close") {
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
-                console.log(`❌ Connection closed. Code: ${statusCode}`);
-                
-                if (statusCode !== DisconnectReason.loggedOut) {
-                    console.log("🔄 Will auto-reconnect...");
-                    // Cleanup old session
-                    setTimeout(() => {
-                        activeSessions.delete(sessionId);
-                        fs.remove(sessionDir).catch(() => {});
-                    }, 5000);
-                } else {
-                    console.log("🚪 Logged out by user");
-                    activeSessions.delete(sessionId);
-                    fs.remove(sessionDir).catch(() => {});
-                }
-            }
-        });
-        
-        // ============ CREDENTIALS UPDATE ============
-        sock.ev.on("creds.update", async (creds) => {
-            console.log("💾 Saving credentials...");
-            await saveCreds();
-        });
-        
-        // ============ MESSAGES HANDLER ============
-        setupMessageHandler(sock);
-        
-        // ============ REQUEST PAIRING CODE ============
-        await delay(1000);
-        
-        if (!sock.authState.creds.registered) {
-            console.log(`🔑 Requesting pairing code for: ${cleanNumber}`);
-            
+            await sock.sendMessage(chatId, { text: "⏬ Downloading video, please wait..." });
             try {
-                // CORRECT WAY to request pairing code
-                const code = await sock.requestPairingCode(cleanNumber);
-                console.log(`✅ Pairing code generated: ${code}`);
-                
-                if (res) {
-                    res.json({ 
-                        status: true, 
-                        code: code,
-                        message: "Code generated! Enter in WhatsApp within 1 minute."
-                    });
-                }
-            } catch (pairError) {
-                console.error("❌ Pairing request failed:", pairError);
-                
-                // Try alternative method
-                try {
-                    console.log("🔄 Trying alternative pairing method...");
-                    const code = await sock.requestPairingCode(cleanNumber);
-                    if (res) {
-                        res.json({ status: true, code: code, message: "Code generated (alt method)!" });
-                    }
-                } catch (altError) {
-                    console.error("❌ Alt method also failed:", altError);
-                    if (res) {
-                        res.json({ 
-                            status: false, 
-                            message: "Failed to generate code. WhatsApp might be blocking the request. Try after 5 minutes."
-                        });
-                    }
-                }
-            }
-        } else {
-            console.log("Already registered, skipping pairing");
-            if (res) {
-                res.json({ status: true, message: "Already connected! Checking..." });
+                const info = await ytdl.getInfo(args[0]);
+                const format = ytdl.chooseFormat(info.formats, { quality: '18' });
+                await sock.sendMessage(chatId, { 
+                    video: { url: format.url },
+                    caption: `*Title:* ${info.videoDetails.title}\n*Duration:* ${info.videoDetails.lengthSeconds}s`
+                });
+            } catch (error) {
+                await sock.sendMessage(chatId, { text: "❌ Failed to download video!" });
             }
         }
         
-        // Auto cleanup after 2 minutes if not connected
-        setTimeout(async () => {
-            if (!sock.user && activeSessions.has(sessionId)) {
-                console.log(`🧹 Cleaning up inactive session: ${sessionId}`);
-                await sock.logout().catch(() => {});
-                activeSessions.delete(sessionId);
-                fs.remove(sessionDir).catch(() => {});
+        else if (command === "yta" || command === "ytmp3") {
+            if (!args[0]) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}yta <youtube_url>` });
+                return;
             }
-        }, 120000);
+            await sock.sendMessage(chatId, { text: "⏬ Downloading audio, please wait..." });
+            try {
+                const info = await ytdl.getInfo(args[0]);
+                const audioFormat = ytdl.chooseFormat(info.formats, { quality: '140' });
+                await sock.sendMessage(chatId, { 
+                    audio: { url: audioFormat.url },
+                    mimetype: 'audio/mpeg',
+                    fileName: `${info.videoDetails.title}.mp3`
+                });
+            } catch (error) {
+                await sock.sendMessage(chatId, { text: "❌ Failed to download audio!" });
+            }
+        }
+        
+        else if (command === "fb" || command === "facebook") {
+            if (!args[0]) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}fb <facebook_url>` });
+                return;
+            }
+            await sock.sendMessage(chatId, { text: "⏬ Downloading Facebook video..." });
+            try {
+                const response = await axios.get(`https://api.siputzx.my.id/api/d/fb?url=${encodeURIComponent(args[0])}`);
+                if (response.data.status && response.data.data.hd) {
+                    await sock.sendMessage(chatId, { video: { url: response.data.data.hd }, caption: "Facebook video downloaded!" });
+                } else {
+                    await sock.sendMessage(chatId, { text: "❌ Failed to get video!" });
+                }
+            } catch (error) {
+                await sock.sendMessage(chatId, { text: "❌ Error downloading Facebook video!" });
+            }
+        }
+        
+        else if (command === "ig" || command === "instagram") {
+            if (!args[0]) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}ig <instagram_url>` });
+                return;
+            }
+            await sock.sendMessage(chatId, { text: "⏬ Downloading Instagram content..." });
+            try {
+                const response = await axios.get(`https://api.siputzx.my.id/api/d/igdl?url=${encodeURIComponent(args[0])}`);
+                if (response.data.status && response.data.data.length > 0) {
+                    for (let media of response.data.data.slice(0, 3)) {
+                        if (media.type === 'video') {
+                            await sock.sendMessage(chatId, { video: { url: media.url } });
+                        } else {
+                            await sock.sendMessage(chatId, { image: { url: media.url } });
+                        }
+                        await delay(1000);
+                    }
+                } else {
+                    await sock.sendMessage(chatId, { text: "❌ Failed to get media!" });
+                }
+            } catch (error) {
+                await sock.sendMessage(chatId, { text: "❌ Error downloading Instagram content!" });
+            }
+        }
+        
+        else if (command === "tiktok") {
+            if (!args[0]) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}tiktok <tiktok_url>` });
+                return;
+            }
+            await sock.sendMessage(chatId, { text: "⏬ Downloading TikTok video..." });
+            try {
+                const response = await axios.get(`https://api.siputzx.my.id/api/d/tiktok?url=${encodeURIComponent(args[0])}`);
+                if (response.data.status && response.data.data.nowm) {
+                    await sock.sendMessage(chatId, { video: { url: response.data.data.nowm }, caption: "TikTok video without watermark!" });
+                } else {
+                    await sock.sendMessage(chatId, { text: "❌ Failed to download TikTok video!" });
+                }
+            } catch (error) {
+                await sock.sendMessage(chatId, { text: "❌ Error downloading TikTok video!" });
+            }
+        }
+        
+        else if (command === "twitter" || command === "tw") {
+            if (!args[0]) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}twitter <tweet_url>` });
+                return;
+            }
+            await sock.sendMessage(chatId, { text: "⏬ Downloading Twitter media..." });
+            try {
+                const response = await axios.get(`https://api.siputzx.my.id/api/d/twitter?url=${encodeURIComponent(args[0])}`);
+                if (response.data.status && response.data.data.hd) {
+                    await sock.sendMessage(chatId, { video: { url: response.data.data.hd }, caption: "Twitter video downloaded!" });
+                } else {
+                    await sock.sendMessage(chatId, { text: "❌ Failed to download Twitter media!" });
+                }
+            } catch (error) {
+                await sock.sendMessage(chatId, { text: "❌ Error downloading Twitter media!" });
+            }
+        }
+        
+        else if (command === "mediafire") {
+            if (!args[0]) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}mediafire <mediafire_url>` });
+                return;
+            }
+            await sock.sendMessage(chatId, { text: "⏬ Getting Mediafire link..." });
+            try {
+                const response = await axios.get(`https://api.siputzx.my.id/api/d/mediafire?url=${encodeURIComponent(args[0])}`);
+                if (response.data.status) {
+                    await sock.sendMessage(chatId, { text: `*Title:* ${response.data.data.title}\n*Size:* ${response.data.data.size}\n*Link:* ${response.data.data.link}` });
+                } else {
+                    await sock.sendMessage(chatId, { text: "❌ Failed to get Mediafire link!" });
+                }
+            } catch (error) {
+                await sock.sendMessage(chatId, { text: "❌ Error fetching Mediafire link!" });
+            }
+        }
+        
+        // ========== MEDIA COMMANDS ==========
+        else if (command === "sticker" || command === "s") {
+            if (msg.message.imageMessage || msg.message.videoMessage) {
+                const mediaMessage = msg.message.imageMessage || msg.message.videoMessage;
+                const stream = await downloadContentFromMessage(mediaMessage, msg.message.imageMessage ? 'image' : 'video');
+                let buffer = Buffer.from([]);
+                for await (const chunk of stream) {
+                    buffer = Buffer.concat([buffer, chunk]);
+                }
+                await sock.sendMessage(chatId, { sticker: buffer }, { quoted: msg });
+            } else {
+                await sock.sendMessage(chatId, { text: `*Usage:* Reply to an image/video with ${PREFIX}sticker` });
+            }
+        }
+        
+        else if (command === "toimage") {
+            if (msg.message.stickerMessage) {
+                const stickerMsg = msg.message.stickerMessage;
+                const stream = await downloadContentFromMessage(stickerMsg, 'sticker');
+                let buffer = Buffer.from([]);
+                for await (const chunk of stream) {
+                    buffer = Buffer.concat([buffer, chunk]);
+                }
+                await sock.sendMessage(chatId, { image: buffer }, { quoted: msg });
+            } else {
+                await sock.sendMessage(chatId, { text: `*Usage:* Reply to a sticker with ${PREFIX}toimage` });
+            }
+        }
+        
+        // ========== TOOLS COMMANDS ==========
+        else if (command === "qr") {
+            if (!args[0]) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}qr <text/link>` });
+                return;
+            }
+            const qrText = args.join(" ");
+            const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(qrText)}`;
+            await sock.sendMessage(chatId, { image: { url: qrUrl }, caption: `QR Code for: ${qrText}` });
+        }
+        
+        else if (command === "shorturl") {
+            if (!args[0]) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}shorturl <url>` });
+                return;
+            }
+            try {
+                const shortResponse = await axios.get(`https://tinyurl.com/api-create.php?url=${encodeURIComponent(args[0])}`);
+                await sock.sendMessage(chatId, { text: `*Shortened URL:*\n${shortResponse.data}` });
+            } catch (error) {
+                await sock.sendMessage(chatId, { text: "❌ Failed to shorten URL!" });
+            }
+        }
+        
+        else if (command === "calc" || command === "calculate") {
+            if (!args[0]) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}calc 2+2` });
+                return;
+            }
+            try {
+                const result = eval(args.join(" "));
+                await sock.sendMessage(chatId, { text: `*Result:* ${result}` });
+            } catch (error) {
+                await sock.sendMessage(chatId, { text: "❌ Invalid calculation!" });
+            }
+        }
+        
+        else if (command === "weather") {
+            if (!args[0]) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}weather <city_name>` });
+                return;
+            }
+            try {
+                const city = args.join(" ");
+                const weatherRes = await axios.get(`https://api.openweathermap.org/data/2.5/weather?q=${city}&appid=bd5e378503939ddaee76f12ad7a97608&units=metric`);
+                const data = weatherRes.data;
+                await sock.sendMessage(chatId, { 
+                    text: `*Weather in ${data.name}*\n\n🌡️ Temperature: ${data.main.temp}°C\n💧 Humidity: ${data.main.humidity}%\n🌬️ Wind: ${data.wind.speed} m/s\n📝 Condition: ${data.weather[0].description}`
+                });
+            } catch (error) {
+                await sock.sendMessage(chatId, { text: "❌ City not found!" });
+            }
+        }
+        
+        else if (command === "wiki") {
+            if (!args[0]) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}wiki <query>` });
+                return;
+            }
+            try {
+                const wikiRes = await axios.get(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(args.join(" "))}`);
+                await sock.sendMessage(chatId, { 
+                    text: `*${wikiRes.data.title}*\n\n${wikiRes.data.extract.substring(0, 1000)}\n\nRead more: ${wikiRes.data.content_urls.desktop.page}`
+                });
+            } catch (error) {
+                await sock.sendMessage(chatId, { text: "❌ No Wikipedia page found!" });
+            }
+        }
+        
+        else if (command === "translate") {
+            if (args.length < 2) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}translate <language_code> <text>\nExample: ${PREFIX}translate hi Hello` });
+                return;
+            }
+            const targetLang = args[0];
+            const textToTranslate = args.slice(1).join(" ");
+            try {
+                const translateRes = await axios.get(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${targetLang}&dt=t&q=${encodeURIComponent(textToTranslate)}`);
+                const translated = translateRes.data[0][0][0];
+                await sock.sendMessage(chatId, { text: `*Translation (${targetLang}):*\n${translated}` });
+            } catch (error) {
+                await sock.sendMessage(chatId, { text: "❌ Translation failed!" });
+            }
+        }
+        
+        // ========== REACTION COMMANDS ==========
+        else if (command === "hug") {
+            const mentionedUser = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || sender;
+            await sock.sendMessage(chatId, { text: `🤗 *@${sender.split("@")[0]}* hugged *@${mentionedUser.split("@")[0]}*!`, mentions: [sender, mentionedUser] });
+        }
+        
+        else if (command === "kiss") {
+            const mentionedUser = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || sender;
+            await sock.sendMessage(chatId, { text: `😘 *@${sender.split("@")[0]}* kissed *@${mentionedUser.split("@")[0]}*! 💋`, mentions: [sender, mentionedUser] });
+        }
+        
+        else if (command === "slap") {
+            const mentionedUser = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || sender;
+            await sock.sendMessage(chatId, { text: `👋 *@${sender.split("@")[0]}* slapped *@${mentionedUser.split("@")[0]}*! 💥`, mentions: [sender, mentionedUser] });
+        }
+        
+        else if (command === "pat") {
+            const mentionedUser = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || sender;
+            await sock.sendMessage(chatId, { text: `🖐️ *@${sender.split("@")[0]}* patted *@${mentionedUser.split("@")[0]}*! 🥰`, mentions: [sender, mentionedUser] });
+        }
+        
+        else if (command === "poke") {
+            const mentionedUser = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || sender;
+            await sock.sendMessage(chatId, { text: `👉 *@${sender.split("@")[0]}* poked *@${mentionedUser.split("@")[0]}*!`, mentions: [sender, mentionedUser] });
+        }
+        
+        else if (command === "dance") {
+            await sock.sendMessage(chatId, { text: `💃 *@${sender.split("@")[0]}* is dancing! 🕺`, mentions: [sender] });
+        }
+        
+        else if (command === "cry") {
+            await sock.sendMessage(chatId, { text: `😭 *@${sender.split("@")[0]}* is crying! 🥺`, mentions: [sender] });
+        }
+        
+        // ========== GROUP COMMANDS ==========
+        else if (command === "tagall" && isGroup) {
+            const groupMetadata = await sock.groupMetadata(chatId);
+            const participants = groupMetadata.participants;
+            let mentionText = "*📢 Attention everyone!*\n\n";
+            let mentions = [];
+            participants.forEach(p => {
+                mentionText += `@${p.id.split("@")[0]}\n`;
+                mentions.push(p.id);
+            });
+            await sock.sendMessage(chatId, { text: mentionText, mentions: mentions });
+        }
+        
+        else if (command === "admins" && isGroup) {
+            const groupMetadata = await sock.groupMetadata(chatId);
+            const admins = groupMetadata.participants.filter(p => p.admin);
+            let adminText = "*👑 Group Admins*\n\n";
+            admins.forEach(admin => {
+                adminText += `@${admin.id.split("@")[0]}\n`;
+            });
+            await sock.sendMessage(chatId, { text: adminText, mentions: admins.map(a => a.id) });
+        }
+        
+        else if (command === "groupinfo" && isGroup) {
+            const groupMetadata = await sock.groupMetadata(chatId);
+            await sock.sendMessage(chatId, { 
+                text: `*📊 Group Information*\n\n*Name:* ${groupMetadata.subject}\n*ID:* ${groupMetadata.id}\n*Owner:* @${groupMetadata.owner?.split("@")[0]}\n*Members:* ${groupMetadata.participants.length}\n*Created:* ${new Date(groupMetadata.creation * 1000).toLocaleDateString()}`,
+                mentions: [groupMetadata.owner]
+            });
+        }
+        
+        else if (command === "promote" && isGroup && (isOwner || msg.key.participant)) {
+            const promoteUser = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
+            if (!promoteUser) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}promote @user` });
+                return;
+            }
+            await sock.groupParticipantsUpdate(chatId, [promoteUser], "promote");
+            await sock.sendMessage(chatId, { text: `✅ @${promoteUser.split("@")[0]} has been promoted to admin!`, mentions: [promoteUser] });
+        }
+        
+        else if (command === "demote" && isGroup && (isOwner || msg.key.participant)) {
+            const demoteUser = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
+            if (!demoteUser) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}demote @user` });
+                return;
+            }
+            await sock.groupParticipantsUpdate(chatId, [demoteUser], "demote");
+            await sock.sendMessage(chatId, { text: `⬇️ @${demoteUser.split("@")[0]} has been demoted!`, mentions: [demoteUser] });
+        }
+        
+        else if (command === "kick" && isGroup && (isOwner || msg.key.participant)) {
+            const kickUser = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
+            if (!kickUser) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}kick @user` });
+                return;
+            }
+            await sock.groupParticipantsUpdate(chatId, [kickUser], "remove");
+            await sock.sendMessage(chatId, { text: `👋 @${kickUser.split("@")[0]} has been removed!`, mentions: [kickUser] });
+        }
+        
+        else if (command === "add" && isGroup && (isOwner || msg.key.participant)) {
+            if (!args[0]) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}add 91xxxxxxxxxx` });
+                return;
+            }
+            const numberToAdd = args[0].replace(/[^0-9]/g, '') + "@s.whatsapp.net";
+            await sock.groupParticipantsUpdate(chatId, [numberToAdd], "add");
+            await sock.sendMessage(chatId, { text: `✅ Added @${args[0]} to the group!`, mentions: [numberToAdd] });
+        }
+        
+        else if (command === "leave" && isGroup) {
+            await sock.sendMessage(chatId, { text: "👋 Bot is leaving this group. Goodbye!" });
+            await delay(2000);
+            await sock.groupLeave(chatId);
+        }
+        
+        // ========== OWNER COMMANDS ==========
+        else if (command === "block" && isOwner) {
+            const blockUser = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
+            if (!blockUser) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}block @user` });
+                return;
+            }
+            await sock.updateBlockStatus(blockUser, "block");
+            await sock.sendMessage(chatId, { text: `🚫 Blocked @${blockUser.split("@")[0]}`, mentions: [blockUser] });
+        }
+        
+        else if (command === "unblock" && isOwner) {
+            const unblockUser = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
+            if (!unblockUser) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}unblock @user` });
+                return;
+            }
+            await sock.updateBlockStatus(unblockUser, "unblock");
+            await sock.sendMessage(chatId, { text: `✅ Unblocked @${unblockUser.split("@")[0]}`, mentions: [unblockUser] });
+        }
+        
+        else if (command === "bc" || command === "broadcast") {
+            if (!isOwner) {
+                await sock.sendMessage(chatId, { text: "❌ Only owner can use this command!" });
+                return;
+            }
+            if (!args[0]) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}bc <message>` });
+                return;
+            }
+            const broadcastMsg = args.join(" ");
+            const chats = await sock.groupFetchAllParticipating();
+            let sentCount = 0;
+            for (let groupId in chats) {
+                await sock.sendMessage(groupId, { text: `📢 *Broadcast Message*\n\n${broadcastMsg}\n\n- ${BOT_NAME}` });
+                sentCount++;
+                await delay(1000);
+            }
+            await sock.sendMessage(chatId, { text: `✅ Broadcast sent to ${sentCount} groups!` });
+        }
+        
+        else if (command === "join" && isOwner) {
+            if (!args[0]) {
+                await sock.sendMessage(chatId, { text: `*Usage:* ${PREFIX}join <group_link>` });
+                return;
+            }
+            const inviteCode = args[0].split("https://chat.whatsapp.com/")[1];
+            await sock.groupAcceptInvite(inviteCode);
+            await sock.sendMessage(chatId, { text: "✅ Bot joined the group!" });
+        }
+        
+        else if (command === "leaveall" && isOwner) {
+            const allGroups = await sock.groupFetchAllParticipating();
+            for (let groupId in allGroups) {
+                await sock.groupLeave(groupId);
+                await delay(1000);
+            }
+            await sock.sendMessage(chatId, { text: "✅ Bot left all groups!" });
+        }
+        
+        else if (command === "setpp") {
+            await sock.sendMessage(chatId, { text: "⚠️ This command requires media. Send with an image!" });
+        }
+        
+        else {
+            // Unknown command - ignore
+        }
         
     } catch (error) {
-        console.error("💥 Fatal error:", error);
-        if (res) {
-            res.json({ status: false, message: "Server error: " + error.message });
-        }
+        console.error("Command error:", error);
+        await sock.sendMessage(chatId, { text: "❌ An error occurred!" });
     }
 }
 
@@ -215,175 +599,94 @@ async function setupMessageHandler(sock) {
         const msg = messages[0];
         if (!msg.message || msg.key.fromMe) return;
         
-        let text = "";
-        if (msg.message.conversation) text = msg.message.conversation;
-        else if (msg.message.extendedTextMessage?.text) text = msg.message.extendedTextMessage.text;
-        else if (msg.message.imageMessage?.caption) text = msg.message.imageMessage.caption;
-        else if (msg.message.videoMessage?.caption) text = msg.message.videoMessage.caption;
+        const messageText = msg.message.conversation || 
+                           msg.message.extendedTextMessage?.text ||
+                           msg.message.imageMessage?.caption ||
+                           msg.message.videoMessage?.caption;
         
-        if (!text) return;
+        if (!messageText) return;
         
-        if (!text.startsWith(PREFIX)) return;
+        const sender = msg.key.remoteJid.endsWith("@g.us") ? msg.key.participant : msg.key.remoteJid;
         
-        const [cmd, ...args] = text.slice(PREFIX.length).trim().split(" ");
+        if (!messageText.startsWith(PREFIX)) return;
+        
+        const [cmd, ...args] = messageText.slice(PREFIX.length).trim().split(" ");
         const command = cmd.toLowerCase();
-        const chatId = msg.key.remoteJid;
-        const sender = chatId.endsWith("@g.us") ? msg.key.participant : chatId;
         
-        console.log(`📨 Command: ${command} from ${sender?.split("@")[0]}`);
+        await handleCommand(sock, msg, command, args, sender);
+    });
+}
+
+// ============ PAIRING FUNCTION ============
+async function startPairing(phoneNumber, res) {
+    const sessionID = `session_${Date.now()}`;
+    const sessionDir = path.join(__dirname, 'sessions', sessionID);
+    
+    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+    const { version } = await fetchLatestBaileysVersion();
+
+    const sock = makeWASocket({
+        version,
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
+        },
+        printQRInTerminal: false,
+        logger: pino({ level: "silent" }),
+        browser: ["Ubuntu", "Chrome", "20.0.04"],
+    });
+    
+    setupMessageHandler(sock);
+    activeSockets.set(sessionID, sock);
+    
+    if (!sock.authState.creds.registered) {
+        phoneNumber = phoneNumber.replace(/[^0-9]/g, '');
         
         try {
-            // MENU
-            if (command === "menu" || command === "help") {
-                const menu = `╔════════════════════════╗
-║  🤖 *${BOT_NAME}*  🤖
-╚════════════════════════╝
-
-╭─「 📋 COMMANDS 」
-│
-│ 📥 *DOWNLOADER*
-│ ├◈ ${PREFIX}ytv <url>
-│ ├◈ ${PREFIX}yta <url>
-│ ├◈ ${PREFIX}fb <url>
-│ ├◈ ${PREFIX}ig <url>
-│ ├◈ ${PREFIX}tiktok <url>
-│
-│ 🎨 *MEDIA*
-│ ├◈ ${PREFIX}sticker
-│ ├◈ ${PREFIX}s
-│ ├◈ ${PREFIX}toimage
-│
-│ 👥 *GROUP*
-│ ├◈ ${PREFIX}tagall
-│ ├◈ ${PREFIX}admins
-│ ├◈ ${PREFIX}groupinfo
-│
-│ 💝 *FUN*
-│ ├◈ ${PREFIX}hug @user
-│ ├◈ ${PREFIX}kiss @user
-│ ├◈ ${PREFIX}slap @user
-│
-│ 🔧 *UTILS*
-│ ├◈ ${PREFIX}ping
-│ ├◈ ${PREFIX}qr <text>
-│ ├◈ ${PREFIX}calc <eq>
-│
-╰─────────────●●►
-
-👑 *Owner:* YAMDHUD
-💡 *${PREFIX}ping* - Check bot status`;
-                
-                await sock.sendMessage(chatId, { text: menu });
-            }
+            await delay(3000);
+            const code = await sock.requestPairingCode(phoneNumber);
+            res.json({ status: true, code: code });
+        } catch (error) {
+            console.error("Pairing Code Error:", error);
+            res.json({ status: false, message: "Code generate nahi ho paya. Try again." });
+        }
+    }
+    
+    sock.ev.on("connection.update", async (update) => {
+        const { connection, lastDisconnect } = update;
+        
+        if (connection === "open") {
+            console.log("✅ WhatsApp Connected!");
+            await delay(5000);
             
-            // PING
-            else if (command === "ping") {
-                const start = Date.now();
-                await sock.sendMessage(chatId, { text: "🏓 Pong!" });
-                const end = Date.now();
-                await sock.sendMessage(chatId, { text: `Latency: ${end - start}ms` });
-            }
+            const credsPath = path.join(sessionDir, 'creds.json');
             
-            // STICKER
-            else if (command === "sticker" || command === "s") {
-                const media = msg.message.imageMessage || msg.message.videoMessage;
-                if (media) {
-                    const stream = await downloadContentFromMessage(media, msg.message.imageMessage ? 'image' : 'video');
-                    let buffer = Buffer.from([]);
-                    for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
-                    await sock.sendMessage(chatId, { sticker: buffer });
-                } else {
-                    await sock.sendMessage(chatId, { text: `📌 Reply to an image/video with ${PREFIX}sticker` });
-                }
-            }
-            
-            // HUG
-            else if (command === "hug") {
-                const mentioned = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
-                if (mentioned) {
-                    await sock.sendMessage(chatId, { 
-                        text: `🤗 @${sender.split("@")[0]} hugged @${mentioned.split("@")[0]}! 💕`,
-                        mentions: [sender, mentioned]
-                    });
-                } else {
-                    await sock.sendMessage(chatId, { text: `🤗 @${sender.split("@")[0]} sends a hug!`, mentions: [sender] });
-                }
-            }
-            
-            // KISS
-            else if (command === "kiss") {
-                const mentioned = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
-                if (mentioned) {
-                    await sock.sendMessage(chatId, { 
-                        text: `😘 @${sender.split("@")[0]} kissed @${mentioned.split("@")[0]}! 💋`,
-                        mentions: [sender, mentioned]
-                    });
-                } else {
-                    await sock.sendMessage(chatId, { text: `😘 @${sender.split("@")[0]} blows a kiss!`, mentions: [sender] });
-                }
-            }
-            
-            // YT VIDEO
-            else if (command === "ytv" && args[0]) {
-                await sock.sendMessage(chatId, { text: "⏬ Downloading video..." });
-                try {
-                    const info = await ytdl.getInfo(args[0]);
-                    const format = ytdl.chooseFormat(info.formats, { quality: '18' });
-                    await sock.sendMessage(chatId, { video: { url: format.url }, caption: info.videoDetails.title });
-                } catch (err) {
-                    await sock.sendMessage(chatId, { text: "❌ Download failed!" });
-                }
-            }
-            
-            // YT AUDIO
-            else if (command === "yta" && args[0]) {
-                await sock.sendMessage(chatId, { text: "⏬ Downloading audio..." });
-                try {
-                    const info = await ytdl.getInfo(args[0]);
-                    const format = ytdl.chooseFormat(info.formats, { quality: '140' });
-                    await sock.sendMessage(chatId, { audio: { url: format.url }, mimetype: 'audio/mpeg' });
-                } catch (err) {
-                    await sock.sendMessage(chatId, { text: "❌ Download failed!" });
-                }
-            }
-            
-            // GROUP INFO
-            else if (command === "groupinfo" && chatId.endsWith("@g.us")) {
-                const metadata = await sock.groupMetadata(chatId);
-                await sock.sendMessage(chatId, {
-                    text: `📊 *GROUP INFO*\n\nName: ${metadata.subject}\nMembers: ${metadata.participants.length}\nOwner: @${metadata.owner?.split("@")[0]}`,
-                    mentions: [metadata.owner]
+            if (fs.existsSync(credsPath)) {
+                const userJid = `${phoneNumber}@s.whatsapp.net`;
+                await sock.sendMessage(userJid, {
+                    document: fs.readFileSync(credsPath),
+                    fileName: "creds.json",
+                    mimetype: "application/json",
+                    caption: `✅ Aapki Creds.json File Taiyaar Hai!\n\nMade by YAMDHUD.\n\nBot Commands: ${PREFIX}menu`
                 });
+                
+                console.log(`✅ File sent to ${phoneNumber}`);
+                setTimeout(() => { 
+                    fs.removeSync(sessionDir);
+                    activeSockets.delete(sessionID);
+                }, 10000);
             }
-            
-            // TAG ALL
-            else if (command === "tagall" && chatId.endsWith("@g.us")) {
-                const metadata = await sock.groupMetadata(chatId);
-                const mentions = metadata.participants.map(p => p.id);
-                await sock.sendMessage(chatId, { text: mentions.map(m => `@${m.split("@")[0]}`).join("\n"), mentions });
+        }
+        
+        if (connection === "close") {
+            let reason = lastDisconnect?.error?.output?.statusCode;
+            if (reason !== DisconnectReason.loggedOut) {
+                console.log("Reconnecting...");
             }
-            
-            // QR CODE
-            else if (command === "qr" && args[0]) {
-                const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(args.join(" "))}`;
-                await sock.sendMessage(chatId, { image: { url: qrUrl } });
-            }
-            
-            // CALCULATOR
-            else if (command === "calc" && args[0]) {
-                try {
-                    const result = eval(args.join(" "));
-                    await sock.sendMessage(chatId, { text: `Result: ${result}` });
-                } catch (err) {
-                    await sock.sendMessage(chatId, { text: "Invalid expression!" });
-                }
-            }
-            
-        } catch (err) {
-            console.error("Command error:", err);
-            await sock.sendMessage(chatId, { text: "❌ Command failed!" });
         }
     });
+    
+    sock.ev.on("creds.update", saveCreds);
 }
 
 // ============ EXPRESS ROUTES ============
@@ -392,161 +695,120 @@ app.get("/", (req, res) => {
         <!DOCTYPE html>
         <html>
         <head>
-            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>${BOT_NAME} - WhatsApp Bot</title>
             <style>
                 * { margin: 0; padding: 0; box-sizing: border-box; }
                 body {
-                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
                     background: linear-gradient(135deg, #075e54 0%, #128C7E 100%);
                     min-height: 100vh;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
                     padding: 20px;
                 }
-                .card {
-                    max-width: 500px;
-                    margin: 0 auto;
+                .container {
                     background: white;
-                    border-radius: 32px;
-                    padding: 40px 24px;
+                    border-radius: 20px;
+                    box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                    padding: 40px;
+                    max-width: 500px;
+                    width: 100%;
                     text-align: center;
-                    box-shadow: 0 20px 40px rgba(0,0,0,0.2);
                 }
-                h1 { color: #075e54; margin-bottom: 8px; }
-                .sub { color: #666; margin-bottom: 32px; font-size: 14px; }
+                h1 { color: #075e54; margin-bottom: 10px; font-size: 1.8em; }
+                .subtitle { color: #128C7E; margin-bottom: 30px; font-size: 0.9em; }
                 input {
                     width: 100%;
-                    padding: 16px;
-                    border: 2px solid #e5e7eb;
-                    border-radius: 16px;
+                    padding: 15px;
                     font-size: 16px;
-                    text-align: center;
-                    margin-bottom: 16px;
+                    border: 2px solid #ddd;
+                    border-radius: 10px;
+                    margin-bottom: 15px;
                 }
                 input:focus { outline: none; border-color: #25d366; }
                 button {
-                    width: 100%;
-                    padding: 16px;
                     background: #25d366;
                     color: white;
                     border: none;
-                    border-radius: 16px;
+                    padding: 15px 30px;
                     font-size: 16px;
-                    font-weight: bold;
+                    border-radius: 10px;
                     cursor: pointer;
+                    width: 100%;
+                    font-weight: bold;
                 }
                 button:hover { background: #128C7E; transform: translateY(-2px); }
                 .code-box {
-                    margin-top: 24px;
+                    margin-top: 30px;
                     padding: 20px;
-                    background: #f0fdf4;
-                    border-radius: 16px;
+                    background: #f0f2f5;
+                    border-radius: 10px;
                     display: none;
                 }
                 .code {
                     font-size: 48px;
                     font-weight: bold;
-                    letter-spacing: 8px;
                     color: #075e54;
-                    font-family: monospace;
+                    letter-spacing: 5px;
+                    margin: 20px 0;
                 }
                 .status {
-                    margin-top: 16px;
-                    padding: 12px;
-                    border-radius: 12px;
+                    margin-top: 20px;
+                    padding: 10px;
+                    border-radius: 10px;
                     font-size: 14px;
-                    display: none;
                 }
-                .success { background: #d1fae5; color: #065f46; display: block; }
-                .error { background: #fee2e2; color: #991b1b; display: block; }
-                .info { background: #dbeafe; color: #1e40af; display: block; }
-                .steps {
-                    text-align: left;
-                    margin-top: 24px;
-                    padding: 16px;
-                    background: #f9fafb;
-                    border-radius: 16px;
-                    font-size: 13px;
-                }
-                .steps h4 { color: #075e54; margin-bottom: 12px; }
-                .steps p { margin: 8px 0; color: #4b5563; }
-                .footer { margin-top: 24px; font-size: 12px; color: #9ca3af; }
+                .success { background: #d4edda; color: #155724; }
+                .error { background: #f8d7da; color: #721c24; }
+                .info { background: #d1ecf1; color: #0c5460; }
+                .footer { margin-top: 30px; font-size: 12px; color: #888; }
             </style>
         </head>
         <body>
-            <div class="card">
+            <div class="container">
                 <h1>🤖 ${BOT_NAME}</h1>
-                <div class="sub">50+ Commands | WhatsApp Bot</div>
-                
-                <input type="tel" id="phone" placeholder="Enter 10-digit number" />
-                <button onclick="getCode()">🔑 Generate Pairing Code</button>
-                
+                <div class="subtitle">WhatsApp Bot Panel</div>
+                <input type="text" id="phone" placeholder="Enter WhatsApp Number (e.g., 918154980144)" />
+                <button onclick="getCode()">🚀 Generate Pairing Code</button>
                 <div id="codeBox" class="code-box">
-                    <div style="margin-bottom: 12px;">✨ Your 6-digit code:</div>
-                    <div id="code" class="code"></div>
-                    <p style="margin-top: 16px; font-size: 12px;">
-                        ⏰ Valid for 1 minute<br>
-                        📱 WhatsApp → Settings → Linked Devices → Link with phone number
-                    </p>
+                    <div>✨ Your Pairing Code:</div>
+                    <div id="displayCode" class="code"></div>
+                    <div>Open WhatsApp > Settings > Linked Devices > Link with phone number</div>
                 </div>
-                
-                <div id="status"></div>
-                
-                <div class="steps">
-                    <h4>📌 How to connect:</h4>
-                    <p>1️⃣ Enter your 10-digit number (without 91)</p>
-                    <p>2️⃣ Click Generate Code</p>
-                    <p>3️⃣ Open WhatsApp → Settings → Linked Devices</p>
-                    <p>4️⃣ Tap "Link with phone number"</p>
-                    <p>5️⃣ Enter the code → Done!</p>
-                    <p>6️⃣ Type <b>.menu</b> to see commands</p>
-                </div>
-                
-                <div class="footer">
-                    Made with ❤️ by YAMDHUD
-                </div>
+                <div id="status" class="status" style="display: none;"></div>
+                <div class="footer">Made with ❤️ by YAMDHUD<br>50+ Commands Available</div>
             </div>
-            
             <script>
                 async function getCode() {
-                    let num = document.getElementById('phone').value;
+                    const num = document.getElementById('phone').value;
                     if (!num) {
-                        showStatus('❌ Enter your number!', 'error');
+                        showStatus('Please enter your WhatsApp number!', 'error');
                         return;
                     }
-                    
-                    num = num.replace(/[^0-9]/g, '');
-                    if (num.length !== 10) {
-                        showStatus('❌ Enter valid 10-digit number!', 'error');
-                        return;
-                    }
-                    
-                    showStatus('⏳ Generating code...', 'info');
                     document.getElementById('codeBox').style.display = 'none';
-                    
+                    showStatus('Generating pairing code... Please wait.', 'info');
                     try {
-                        const res = await fetch('/get-code?num=' + num);
-                        const data = await res.json();
-                        
-                        if (data.status && data.code) {
-                            document.getElementById('code').innerText = data.code;
+                        const response = await fetch('/get-code?num=' + encodeURIComponent(num));
+                        const data = await response.json();
+                        if(data.status) {
+                            document.getElementById('displayCode').innerText = data.code;
                             document.getElementById('codeBox').style.display = 'block';
-                            showStatus('✅ Code generated! Enter in WhatsApp now.', 'success');
-                            
-                            setTimeout(() => {
-                                document.getElementById('codeBox').style.display = 'none';
-                            }, 60000);
+                            showStatus('✅ Code generated! Enter this code in WhatsApp.', 'success');
                         } else {
-                            showStatus('❌ ' + (data.message || 'Failed! Try again.'), 'error');
+                            showStatus('❌ Error: ' + data.message, 'error');
                         }
-                    } catch (err) {
-                        showStatus('❌ Network error! Check connection.', 'error');
+                    } catch (error) {
+                        showStatus('❌ Network error! Please try again.', 'error');
                     }
                 }
-                
-                function showStatus(msg, type) {
-                    const div = document.getElementById('status');
-                    div.innerHTML = '<div class="' + type + '">' + msg + '</div>';
-                    setTimeout(() => { div.innerHTML = ''; }, 8000);
+                function showStatus(message, type) {
+                    const statusDiv = document.getElementById('status');
+                    statusDiv.textContent = message;
+                    statusDiv.className = 'status ' + type;
+                    statusDiv.style.display = 'block';
+                    setTimeout(() => { statusDiv.style.display = 'none'; }, 8000);
                 }
             </script>
         </body>
@@ -555,39 +817,22 @@ app.get("/", (req, res) => {
 });
 
 app.get("/get-code", async (req, res) => {
-    let num = req.query.num;
-    if (!num) {
-        return res.json({ status: false, message: "Number required!" });
-    }
-    
-    num = num.replace(/[^0-9]/g, '');
-    if (num.length < 10) {
-        return res.json({ status: false, message: "Invalid number! Enter 10 digits." });
-    }
-    
-    // Add country code if not present
-    if (!num.startsWith('91')) {
-        num = '91' + num;
-    }
-    
-    console.log(`\n🔵 New pairing request for: ${num}`);
-    await createBotSession(num, res);
-});
-
-// Health check
-app.get("/health", (req, res) => {
-    res.json({ 
-        status: "online", 
-        uptime: process.uptime(),
-        sessions: activeSessions.size,
-        bot: BOT_NAME
-    });
+    const num = req.query.num;
+    if (!num) return res.json({ status: false, message: "Number chahiye!" });
+    await startPairing(num, res);
 });
 
 app.listen(port, () => {
-    console.log(`\n🚀 ${BOT_NAME} is running!`);
-    console.log(`📍 http://localhost:${port}`);
+    console.log(`🚀 ${BOT_NAME} Bot running at http://localhost:${port}`);
     console.log(`📱 Owner: ${OWNER_NUMBER}`);
     console.log(`🎯 Prefix: ${PREFIX}`);
-    console.log(`💚 Health: http://localhost:${port}/health\n`);
+    console.log(`✨ Total Commands: 50+`);
+});
+
+process.on('SIGINT', async () => {
+    console.log('\n🛑 Shutting down...');
+    for (let [id, sock] of activeSockets) {
+        await sock.logout();
+    }
+    process.exit(0);
 });
