@@ -1,7 +1,7 @@
 {
-  "name": "9man-x-yamdhund",
-  "version": "2.0.0",
-  "description": "WhatsApp Bot with 50+ Commands",
+  "name": "9man-x-bot",
+  "version": "3.0.0",
+  "description": "WhatsApp Bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
